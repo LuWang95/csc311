@@ -21,7 +21,7 @@ def extract_rating(response):
 
 def main():
     # 1. Load Data
-    df = pd.read_csv("training_data_202601.csv")
+    df = pd.read_csv("training_data_clean.csv")
 
     # 2. Define Features and Target
     target_col = "Painting"
