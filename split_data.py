@@ -18,7 +18,7 @@ def load_dataframe(input_path="training_data_clean.csv"):
     df_clean, _, _ = clean_dataframe(df_raw)
     return df_clean
 
-# df_trainval and df_test are the CV set and the reserved test set.
+# df_trainval and df_test are the CV set and the reserved test set. Split is a list of tuples, each containing the indices of the training and validation sets for each fold.
 def get_splits_with_test(
     df,
     target_col="Painting",
