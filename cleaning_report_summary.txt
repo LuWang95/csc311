@@ -1,0 +1,5 @@
+n_rows: 1686
+n_columns_raw: 16
+n_columns_clean: 17
+avg_missing_rate_raw: 0.03847864768683274
+avg_missing_rate_clean: 0.028504640290279812

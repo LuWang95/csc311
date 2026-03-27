@@ -18,6 +18,13 @@ def extract_rating(response):
     return int(match.group(1)) if match else None
 
 
+def impute_with_train_median(train_df, val_df, feature_cols):
+    med = train_df[feature_cols].median(numeric_only=True)
+    x_train = train_df[feature_cols].fillna(med).to_numpy()
+    x_val = val_df[feature_cols].fillna(med).to_numpy()
+    return x_train, x_val
+
+
 def main():
     # 1. Load Data (same file as baseline; load_dataframe can fall back to raw + clean)
     df = load_dataframe("training_data_clean.csv")
@@ -46,7 +53,9 @@ def main():
     for col in likert_cols:
         df_processed[col] = df_processed[col].apply(extract_rating)
 
-    df_model = df_processed[[target_col] + feature_cols].dropna().reset_index(drop=True)
+    # Keep all rows before split (except missing target) so group integrity is preserved.
+    df_model = df_processed[["unique_id", target_col] + feature_cols].copy()
+    df_model = df_model[df_model[target_col].notna()].reset_index(drop=True)
 
     # 4. Split: use split_data (hold-out test + CV folds on train pool)
     # test_size=0.30 matches baseline's 30% test set.
@@ -58,12 +67,7 @@ def main():
         seed=42,
     )
 
-    X_pool = df_train_pool[feature_cols].to_numpy()
-    y_pool = df_train_pool[target_col].to_numpy()
-    X_test = df_test[feature_cols].to_numpy()
-    y_test = df_test[target_col].to_numpy()
-
-    print(f"Data Splits: train_pool={len(X_pool)}, test={len(X_test)}, folds={len(splits)}")
+    print(f"Data Splits: train_pool={len(df_train_pool)}, test={len(df_test)}, folds={len(splits)}")
 
     # 5. Find Best k using CV (average validation accuracy across folds)
     best_k = 1
@@ -72,10 +76,12 @@ def main():
 
     for k in range(1, 31):
         fold_val_accs = []
-        #Sample usage of splits
-        for fold_id, (train_idx, val_idx) in enumerate(splits, start=1):
-            X_train, X_val = X_pool[train_idx], X_pool[val_idx]
-            y_train, y_val = y_pool[train_idx], y_pool[val_idx]
+        for train_idx, val_idx in splits:
+            train_fold = df_train_pool.iloc[train_idx]
+            val_fold = df_train_pool.iloc[val_idx]
+            X_train, X_val = impute_with_train_median(train_fold, val_fold, feature_cols)
+            y_train = train_fold[target_col].to_numpy()
+            y_val = val_fold[target_col].to_numpy()
 
             knn = KNeighborsClassifier(n_neighbors=k)
             knn.fit(X_train, y_train)
@@ -92,6 +98,11 @@ def main():
     print(f"Best k found: {best_k} | CV mean={best_cv_mean:.4f} std={best_cv_std:.4f}")
 
     # 6. Retrain on full train_pool and evaluate on held-out test set
+    pool_med = df_train_pool[feature_cols].median(numeric_only=True)
+    X_pool = df_train_pool[feature_cols].fillna(pool_med).to_numpy()
+    y_pool = df_train_pool[target_col].to_numpy()
+    X_test = df_test[feature_cols].fillna(pool_med).to_numpy()
+    y_test = df_test[target_col].to_numpy()
     final_knn = KNeighborsClassifier(n_neighbors=best_k)
     final_knn.fit(X_pool, y_pool)
     test_acc = final_knn.score(X_test, y_test)

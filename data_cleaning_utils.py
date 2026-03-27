@@ -109,3 +109,30 @@ def clean_dataframe(df):
         y = df["Painting"].map(label_map).astype("Int64")
 
     return df.copy(), y, label_map
+
+
+def build_cleaning_report(df_raw, df_clean):
+    rows = []
+    all_cols = sorted(set(df_raw.columns).union(set(df_clean.columns)))
+    for col in all_cols:
+        raw_na = float(df_raw[col].isna().mean()) if col in df_raw.columns else np.nan
+        clean_na = float(df_clean[col].isna().mean()) if col in df_clean.columns else np.nan
+        rows.append(
+            {
+                "column": col,
+                "missing_rate_raw": raw_na,
+                "missing_rate_clean": clean_na,
+                "missing_rate_delta": clean_na - raw_na,
+            }
+        )
+
+    report_df = pd.DataFrame(rows).sort_values("missing_rate_clean", ascending=False)
+
+    summary = {
+        "n_rows": int(len(df_clean)),
+        "n_columns_raw": int(df_raw.shape[1]),
+        "n_columns_clean": int(df_clean.shape[1]),
+        "avg_missing_rate_raw": float(df_raw.isna().mean().mean()),
+        "avg_missing_rate_clean": float(df_clean.isna().mean().mean()),
+    }
+    return report_df, summary
