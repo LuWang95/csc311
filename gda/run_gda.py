@@ -17,8 +17,11 @@ from typing import Dict, List
 
 import numpy as np
 import pandas as pd
+from sklearn.decomposition import TruncatedSVD
 from sklearn.discriminant_analysis import QuadraticDiscriminantAnalysis
+from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics import accuracy_score, classification_report, precision_recall_fscore_support
+from sklearn.preprocessing import StandardScaler
 
 # Ensure project-root imports work even when running this file directly.
 ROOT_DIR = Path(__file__).resolve().parents[1]
@@ -28,6 +31,9 @@ if str(ROOT_DIR) not in sys.path:
 from split_data import get_splits_with_test, load_dataframe
 
 
+TEXT_COL = "text_all"
+
+
 def extract_rating(response):
     if pd.isna(response):
         return None
@@ -35,11 +41,57 @@ def extract_rating(response):
     return int(match.group(1)) if match else None
 
 
-def impute_with_train_median(train_df, val_df, feature_cols):
+def build_features_with_train_fit(
+    train_df: pd.DataFrame,
+    other_df: pd.DataFrame,
+    feature_cols: List[str],
+    use_text: bool,
+    tfidf_max_features: int,
+    text_svd_components: int,
+):
+    # Numeric path: fold-safe median imputation + scaling fit only on train.
     med = train_df[feature_cols].median(numeric_only=True)
-    x_train = train_df[feature_cols].fillna(med).to_numpy()
-    x_val = val_df[feature_cols].fillna(med).to_numpy()
-    return x_train, x_val
+    x_train_num = train_df[feature_cols].fillna(med).to_numpy(dtype=np.float32)
+    x_other_num = other_df[feature_cols].fillna(med).to_numpy(dtype=np.float32)
+    num_scaler = StandardScaler()
+    x_train_num = num_scaler.fit_transform(x_train_num)
+    x_other_num = num_scaler.transform(x_other_num)
+
+    if not use_text or TEXT_COL not in train_df.columns:
+        return x_train_num.astype(np.float32), x_other_num.astype(np.float32)
+
+    # Text path: fit TF-IDF and SVD on train only, then transform other.
+    train_text = train_df[TEXT_COL].fillna("").astype(str)
+    other_text = other_df[TEXT_COL].fillna("").astype(str)
+
+    min_df = 1 if len(train_df) < 80 else 2
+    vectorizer = TfidfVectorizer(
+        max_features=tfidf_max_features,
+        ngram_range=(1, 2),
+        min_df=min_df,
+        sublinear_tf=True,
+    )
+    x_train_text_sparse = vectorizer.fit_transform(train_text)
+    x_other_text_sparse = vectorizer.transform(other_text)
+
+    n_vocab = x_train_text_sparse.shape[1]
+    n_comp = min(text_svd_components, max(0, n_vocab - 1))
+
+    if n_comp >= 2:
+        svd = TruncatedSVD(n_components=n_comp, random_state=42)
+        x_train_text = svd.fit_transform(x_train_text_sparse)
+        x_other_text = svd.transform(x_other_text_sparse)
+    else:
+        x_train_text = x_train_text_sparse.toarray()
+        x_other_text = x_other_text_sparse.toarray()
+
+    text_scaler = StandardScaler()
+    x_train_text = text_scaler.fit_transform(x_train_text)
+    x_other_text = text_scaler.transform(x_other_text)
+
+    x_train = np.hstack([x_train_num, x_train_text]).astype(np.float32)
+    x_other = np.hstack([x_other_num, x_other_text]).astype(np.float32)
+    return x_train, x_other
 
 
 def evaluate_reg_param_grid(
@@ -48,6 +100,9 @@ def evaluate_reg_param_grid(
     feature_cols: List[str],
     target_col: str,
     reg_param_values: List[float],
+    use_text: bool,
+    tfidf_max_features: int,
+    text_svd_components: int,
 ) -> Dict[str, object]:
     best = {
         "reg_param": None,
@@ -65,7 +120,14 @@ def evaluate_reg_param_grid(
             train_fold = df_train_pool.iloc[train_idx]
             val_fold = df_train_pool.iloc[val_idx]
 
-            x_train, x_val = impute_with_train_median(train_fold, val_fold, feature_cols)
+            x_train, x_val = build_features_with_train_fit(
+                train_df=train_fold,
+                other_df=val_fold,
+                feature_cols=feature_cols,
+                use_text=use_text,
+                tfidf_max_features=tfidf_max_features,
+                text_svd_components=text_svd_components,
+            )
             y_train = train_fold[target_col].to_numpy()
             y_val = val_fold[target_col].to_numpy()
 
@@ -118,6 +180,9 @@ def iterative_tune_reg_param(
     feature_cols: List[str],
     target_col: str,
     initial_grid: List[float],
+    use_text: bool,
+    tfidf_max_features: int,
+    text_svd_components: int,
     n_rounds: int = 3,
     n_points: int = 9,
 ) -> Dict[str, object]:
@@ -144,6 +209,9 @@ def iterative_tune_reg_param(
             feature_cols=feature_cols,
             target_col=target_col,
             reg_param_values=current_grid,
+            use_text=use_text,
+            tfidf_max_features=tfidf_max_features,
+            text_svd_components=text_svd_components,
         )
         if round_best["reg_param"] is None:
             break
@@ -181,14 +249,18 @@ def iterative_tune_reg_param(
 
 def main():
     parser = argparse.ArgumentParser(description="Run iterative GDA (QDA) tuning and evaluation.")
-    parser.add_argument("--n-rounds", type=int, default=3, help="Number of iterative tuning rounds.")
+    parser.add_argument("--n-rounds", type=int, default=5, help="Number of iterative tuning rounds.")
     parser.add_argument(
         "--n-points",
         type=int,
-        default=9,
+        default=13,
         help="Number of refinement points per round (coarse-to-fine grid density).",
     )
+    parser.add_argument("--no-text", action="store_true", help="Disable text features and use numeric-only GDA.")
+    parser.add_argument("--tfidf-max-features", type=int, default=10000)
+    parser.add_argument("--text-svd-components", type=int, default=400)
     args = parser.parse_args()
+    use_text = not args.no_text
 
     df = load_dataframe("training_data_clean.csv")
 
@@ -214,7 +286,14 @@ def main():
     for col in likert_cols:
         df_processed[col] = df_processed[col].apply(extract_rating)
 
-    df_model = df_processed[["unique_id", target_col] + feature_cols].copy()
+    if TEXT_COL in df_processed.columns:
+        df_processed[TEXT_COL] = df_processed[TEXT_COL].fillna("").astype(str)
+
+    model_cols = ["unique_id", target_col] + feature_cols
+    if use_text and TEXT_COL in df_processed.columns:
+        model_cols.append(TEXT_COL)
+
+    df_model = df_processed[model_cols].copy()
     df_model = df_model[df_model[target_col].notna()].reset_index(drop=True)
 
     df_train_pool, df_test, splits = get_splits_with_test(
@@ -225,7 +304,8 @@ def main():
         seed=42,
     )
 
-    print("=== Gaussian Discriminant Analysis (QDA, numeric features) ===")
+    mode = "numeric+text" if use_text and TEXT_COL in df_model.columns else "numeric-only"
+    print(f"=== Gaussian Discriminant Analysis (QDA, {mode}) ===")
     print(
         f"Rows: total={len(df_model)}, train_pool={len(df_train_pool)}, test={len(df_test)}, folds={len(splits)}"
     )
@@ -238,6 +318,9 @@ def main():
         feature_cols=feature_cols,
         target_col=target_col,
         initial_grid=initial_reg_param_grid,
+        use_text=use_text and TEXT_COL in df_model.columns,
+        tfidf_max_features=args.tfidf_max_features,
+        text_svd_components=args.text_svd_components,
         n_rounds=args.n_rounds,
         n_points=args.n_points,
     )
@@ -260,10 +343,15 @@ def main():
     print(f"CV mean accuracy: {best['cv_mean']:.4f}")
     print(f"CV std: {best['cv_std']:.4f}")
 
-    train_pool_med = df_train_pool[feature_cols].median(numeric_only=True)
-    x_pool = df_train_pool[feature_cols].fillna(train_pool_med).to_numpy()
+    x_pool, x_test = build_features_with_train_fit(
+        train_df=df_train_pool,
+        other_df=df_test,
+        feature_cols=feature_cols,
+        use_text=use_text and TEXT_COL in df_model.columns,
+        tfidf_max_features=args.tfidf_max_features,
+        text_svd_components=args.text_svd_components,
+    )
     y_pool = df_train_pool[target_col].to_numpy()
-    x_test = df_test[feature_cols].fillna(train_pool_med).to_numpy()
     y_test = df_test[target_col].to_numpy()
 
     final_model = QuadraticDiscriminantAnalysis(reg_param=best["reg_param"])

@@ -16,7 +16,8 @@ Final test accuracy is measured on held-out 20% split from `training_data_clean.
 | Model | Script | CV metric | Holdout test metric | Notes |
 |---|---|---|---|---|
 | Gaussian Naive Bayes | `naive_bayes/run_gnb.py` | CV accuracy mean=0.6778, std=0.0124 | Accuracy=0.6903, Macro Precision=0.6966, Macro Recall=0.6903, Macro F1=0.6511 | Best `var_smoothing=1e-12` |
-| GDA (QDA) | `gda/run_gda.py` | CV accuracy mean=0.6667, std=0.0124 | Accuracy=0.6755, Macro Precision=0.6658, Macro Recall=0.6755, Macro F1=0.6384 | Iterative tuning selected `reg_param=0.345833` |
+| Naive Bayes (text TF-IDF + MultinomialNB, final) | `naive_bayes_finall.py` | N/A in this script (uses tuned params) | Accuracy=0.8614, Macro F1=0.8607 | Params: `alpha=0.5`, `max_features=5000`, `ngram=(1,1)`; Confusion Matrix=`[[99,10,4],[10,90,13],[4,6,103]]` |
+| GDA (QDA, numeric+text default) | `gda/run_gda.py` | CV accuracy mean=0.8233, std=0.0164 | Accuracy=0.8466, Macro Precision=0.8489, Macro Recall=0.8466, Macro F1=0.8435 | Defaults: `tfidf_max_features=10000`, `text_svd_components=400`, `n_rounds=5`, `n_points=13`; selected `reg_param=0.108333` |
 | Neural Net (MLP + optional TF-IDF text) | `neural_network.py` | CV val accuracy mean=0.8804, std=0.0069 | Accuracy=0.8997, Macro Precision=0.8996, Macro Recall=0.8997, Macro F1=0.8991 | Run used `use_text=True`; includes holdout classification report |
 
 ## Where model metrics are documented
