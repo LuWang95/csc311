@@ -5,6 +5,7 @@ Build and communicate a Gaussian Naive Bayes baseline that follows the same spli
 
 ## Files In This Folder
 - `run_gnb.py`: trains and evaluates Gaussian Naive Bayes using the shared CV and holdout flow.
+- `doc.md`: Naive Bayes documentation.
 
 ## Why Gaussian Naive Bayes
 - Our first-pass model uses numeric features only.
@@ -38,8 +39,10 @@ Build and communicate a Gaussian Naive Bayes baseline that follows the same spli
 From repository root:
 
 ```bash
-python naive_bayes/run_gnb.py
+python3 naive_bayes/run_gnb.py
 ```
+
+For GDA documentation and script, see `gda/doc.md` and `gda/run_gda.py`.
 
 ## Output You Should Record
 - Fold accuracies for the selected setting
