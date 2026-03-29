@@ -1,11 +1,9 @@
 """
-PyTorch MLP: numeric (median + scale) + optional TF-IDF on text_all.
-Group splits via split_data. Hyperparameters (lr, hidden depth) are chosen by
-grid search with mean CV validation accuracy; refit epoch count is the mean of
-per-fold best_ep for the winning config. Final model trains on ALL train_pool,
-then evaluates the held-out test set. Regularization: dropout after hidden ReLUs,
-Adam weight decay (L2 on weights).
+PyTorch MLP: same pipeline and CV grid as neural_network.py, but dropout only —
+no Adam weight decay (L2). Hyperparameters (lr, hidden depth) via lr-grid ×
+hidden-layers-grid; refit epochs = mean of fold best_ep for the winning config.
 
+Run: python mlp_no_regularization
 Requires: torch, scikit-learn
 """
 import argparse
@@ -90,8 +88,7 @@ def featurize(train_df: pd.DataFrame, other_df: pd.DataFrame, use_text: bool, tf
 class MLP(nn.Module):
     """
     n_hidden_layers = number of hidden Linear stacks (width h) before the classifier.
-    n_hidden_layers=1: in→h → ReLU → Dropout → h→classes
-    n_hidden_layers=2: in→h → … → h→h → … → h→classes (original default)
+    Same structure as neural_network.py; only optimizer differs (no weight decay).
     """
 
     def __init__(
@@ -154,19 +151,17 @@ def train_with_val(
     hidden: int,
     n_hidden_layers: int,
     dropout: float,
-    weight_decay: float,
     device: torch.device,
     patience: Optional[int],
     min_delta: float,
 ) -> Tuple[float, int, float]:
     """
     Returns (val_accuracy, best_epoch, train_accuracy on x_tr with final weights).
-    If patience is set, early-stop on val loss and restore best weights.
-    best_epoch = epoch index (1-based) with lowest val loss when ES used, else epochs.
+    Adam without weight decay (same as neural_network.py except L2).
     """
     model = MLP(x_tr.shape[1], n_class, hidden, n_hidden_layers, dropout).to(device)
     crit = nn.CrossEntropyLoss()
-    opt = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
+    opt = torch.optim.Adam(model.parameters(), lr=lr)
     loader = DataLoader(
         TensorDataset(torch.from_numpy(x_tr), torch.from_numpy(y_tr).long()),
         batch_size=min(batch_size, len(x_tr)),
@@ -214,11 +209,9 @@ def train_with_val(
     return acc, (best_ep if use_es else max(epochs, 1)), train_acc
 
 
-def fit_epochs(
-    model: nn.Module, x, y, epochs, batch_size, lr, device, weight_decay: float
-):
+def fit_epochs(model: nn.Module, x, y, epochs, batch_size, lr, device):
     crit = nn.CrossEntropyLoss()
-    opt = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
+    opt = torch.optim.Adam(model.parameters(), lr=lr)
     loader = DataLoader(
         TensorDataset(torch.from_numpy(x), torch.from_numpy(y).long()),
         batch_size=min(batch_size, len(x)),
@@ -267,13 +260,7 @@ def main():
         "--dropout",
         type=float,
         default=0.2,
-        help="Dropout after each hidden ReLU (0 = no dropout).",
-    )
-    p.add_argument(
-        "--weight-decay",
-        type=float,
-        default=1e-4,
-        help="Adam L2 weight decay; use 0 to disable.",
+        help="Dropout after each hidden ReLU (0 = no dropout). Same default as neural_network.py.",
     )
     p.add_argument("--no-text", action="store_true")
     p.add_argument("--tfidf-max-features", type=int, default=5000)
@@ -294,7 +281,7 @@ def main():
 
     print(
         f"pool={len(pool)} test={len(test)} folds={len(splits)} classes={n_class} "
-        f"use_text={use_text} dropout={args.dropout} weight_decay={args.weight_decay}"
+        f"use_text={use_text} dropout={args.dropout} (no weight decay)"
     )
 
     lr_grid = parse_lr_grid(args.lr_grid, args.lr)
@@ -330,7 +317,6 @@ def main():
                     args.hidden,
                     n_hl,
                     args.dropout,
-                    args.weight_decay,
                     device,
                     es_pat,
                     args.min_delta,
@@ -362,16 +348,7 @@ def main():
         x_pool.shape[1], n_class, args.hidden, best_hl, args.dropout
     ).to(device)
     set_seed(args.seed)
-    fit_epochs(
-        model,
-        x_pool,
-        y_pool,
-        refit_ep,
-        args.batch_size,
-        best_lr,
-        device,
-        args.weight_decay,
-    )
+    fit_epochs(model, x_pool, y_pool, refit_ep, args.batch_size, best_lr, device)
 
     model.eval()
     with torch.no_grad():
@@ -391,7 +368,7 @@ def main():
         f"Chosen by CV: lr={best_lr:g} hidden_layers={best_hl} "
         f"mean_CV_val_acc={best_mean_cv:.4f}  mean_CV_train_acc={best_mean_cv_train:.4f}  "
         f"refit_epochs={refit_ep} (mean of fold best_ep)  input_dim={x_pool.shape[1]}  "
-        f"dropout={args.dropout} weight_decay={args.weight_decay}"
+        f"dropout={args.dropout}"
     )
     print(f"Train accuracy (full pool refit): {train_acc_final:.4f}")
     print(f"Test accuracy: {test_acc:.4f}")
