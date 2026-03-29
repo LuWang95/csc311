@@ -1,6 +1,6 @@
 """
 PyTorch MLP: numeric (median + scale) + optional TF-IDF on text_all.
-Group splits via split_data. Hyperparameters (lr, hidden depth) are chosen by
+Group splits via split_data. Hyperparameters (lr, hidden width h, hidden depth) are chosen by
 grid search with mean CV validation accuracy; refit epoch count is the mean of
 per-fold best_ep for the winning config. Final model trains on ALL train_pool,
 then evaluates the held-out test set. Regularization: dropout after hidden ReLUs,
@@ -244,7 +244,18 @@ def main():
         default="1e-4,3e-4,1e-3,3e-3",
         help="Comma-separated candidate LRs; best mean CV val accuracy wins.",
     )
-    p.add_argument("--hidden", type=int, default=64, help="Hidden width h.")
+    p.add_argument(
+        "--hidden",
+        type=int,
+        default=64,
+        help="Default hidden width h if --hidden-size-grid is empty.",
+    )
+    p.add_argument(
+        "--hidden-size-grid",
+        type=str,
+        default="32,64,128",
+        help="Comma-separated hidden widths h; best mean CV val accuracy wins.",
+    )
     p.add_argument(
         "--hidden-layers",
         type=int,
@@ -299,59 +310,63 @@ def main():
 
     lr_grid = parse_lr_grid(args.lr_grid, args.lr)
     hl_grid = parse_int_grid(args.hidden_layers_grid, args.hidden_layers)
-    n_cfgs = len(lr_grid) * len(hl_grid)
+    h_grid = parse_int_grid(args.hidden_size_grid, args.hidden)
+    n_cfgs = len(lr_grid) * len(hl_grid) * len(h_grid)
     print(f"CV hyperparameter search ({n_cfgs} configs × {len(splits)} folds)…")
 
     best_mean_cv = -1.0
     best_lr = args.lr
     best_hl = args.hidden_layers
+    best_h = args.hidden
     best_fold_eps: list = []
     best_mean_cv_train = 0.0
 
     for lr in lr_grid:
         for n_hl in hl_grid:
-            fold_accs = []
-            fold_eps = []
-            fold_train_accs = []
-            for fi, (tr_i, va_i) in enumerate(splits):
-                set_seed(args.seed + fi)
-                tr, va = pool.iloc[tr_i], pool.iloc[va_i]
-                x_tr, x_va = featurize(tr, va, use_text, args.tfidf_max_features)
-                y_tr, y_va = le.transform(tr[TARGET]), le.transform(va[TARGET])
-                acc, ep, tr_acc = train_with_val(
-                    x_tr,
-                    y_tr,
-                    x_va,
-                    y_va,
-                    n_class,
-                    args.epochs,
-                    args.batch_size,
-                    lr,
-                    args.hidden,
-                    n_hl,
-                    args.dropout,
-                    args.weight_decay,
-                    device,
-                    es_pat,
-                    args.min_delta,
+            for h in h_grid:
+                fold_accs = []
+                fold_eps = []
+                fold_train_accs = []
+                for fi, (tr_i, va_i) in enumerate(splits):
+                    set_seed(args.seed + fi)
+                    tr, va = pool.iloc[tr_i], pool.iloc[va_i]
+                    x_tr, x_va = featurize(tr, va, use_text, args.tfidf_max_features)
+                    y_tr, y_va = le.transform(tr[TARGET]), le.transform(va[TARGET])
+                    acc, ep, tr_acc = train_with_val(
+                        x_tr,
+                        y_tr,
+                        x_va,
+                        y_va,
+                        n_class,
+                        args.epochs,
+                        args.batch_size,
+                        lr,
+                        h,
+                        n_hl,
+                        args.dropout,
+                        args.weight_decay,
+                        device,
+                        es_pat,
+                        args.min_delta,
+                    )
+                    fold_accs.append(acc)
+                    fold_eps.append(ep)
+                    fold_train_accs.append(tr_acc)
+                m, s = float(np.mean(fold_accs)), float(np.std(fold_accs))
+                mep = float(np.mean(fold_eps))
+                mt = float(np.mean(fold_train_accs))
+                print(
+                    f"  lr={lr:g}  hidden={h}  hidden_layers={n_hl}  "
+                    f"mean_CV_val_acc={m:.4f}  std={s:.4f}  "
+                    f"mean_CV_train_acc={mt:.4f}  mean_best_ep={mep:.1f}"
                 )
-                fold_accs.append(acc)
-                fold_eps.append(ep)
-                fold_train_accs.append(tr_acc)
-            m, s = float(np.mean(fold_accs)), float(np.std(fold_accs))
-            mep = float(np.mean(fold_eps))
-            mt = float(np.mean(fold_train_accs))
-            print(
-                f"  lr={lr:g}  hidden_layers={n_hl}  "
-                f"mean_CV_val_acc={m:.4f}  std={s:.4f}  "
-                f"mean_CV_train_acc={mt:.4f}  mean_best_ep={mep:.1f}"
-            )
-            if m > best_mean_cv:
-                best_mean_cv = m
-                best_lr = lr
-                best_hl = n_hl
-                best_fold_eps = list(fold_eps)
-                best_mean_cv_train = mt
+                if m > best_mean_cv:
+                    best_mean_cv = m
+                    best_lr = lr
+                    best_hl = n_hl
+                    best_h = h
+                    best_fold_eps = list(fold_eps)
+                    best_mean_cv_train = mt
 
     refit_ep = max(1, int(round(float(np.mean(best_fold_eps)))))
 
@@ -359,7 +374,7 @@ def main():
     y_pool, y_te = le.transform(pool[TARGET]), le.transform(test[TARGET])
 
     model = MLP(
-        x_pool.shape[1], n_class, args.hidden, best_hl, args.dropout
+        x_pool.shape[1], n_class, best_h, best_hl, args.dropout
     ).to(device)
     set_seed(args.seed)
     fit_epochs(
@@ -388,7 +403,7 @@ def main():
     )
 
     print(
-        f"Chosen by CV: lr={best_lr:g} hidden_layers={best_hl} "
+        f"Chosen by CV: lr={best_lr:g} hidden={best_h} hidden_layers={best_hl} "
         f"mean_CV_val_acc={best_mean_cv:.4f}  mean_CV_train_acc={best_mean_cv_train:.4f}  "
         f"refit_epochs={refit_ep} (mean of fold best_ep)  input_dim={x_pool.shape[1]}  "
         f"dropout={args.dropout} weight_decay={args.weight_decay}"
