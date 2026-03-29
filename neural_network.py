@@ -16,6 +16,7 @@ import pandas as pd
 import torch
 import torch.nn as nn
 from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.metrics import classification_report, precision_recall_fscore_support
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import LabelEncoder, StandardScaler
 from torch.utils.data import DataLoader, TensorDataset
@@ -282,8 +283,21 @@ def main():
     model.eval()
     with torch.no_grad():
         pred = model(torch.from_numpy(x_te).to(device)).argmax(1).cpu().numpy()
+    test_acc = float((pred == y_te).mean())
+    precision_macro, recall_macro, f1_macro, _ = precision_recall_fscore_support(
+        y_te,
+        pred,
+        average="macro",
+        zero_division=0,
+    )
+
     print(f"Refit epochs (from monitor ES): {best_ep}  input_dim={x_pool.shape[1]}")
-    print(f"Test accuracy: {(pred == y_te).mean():.4f}")
+    print(f"Test accuracy: {test_acc:.4f}")
+    print(f"Test precision (macro): {precision_macro:.4f}")
+    print(f"Test recall (macro): {recall_macro:.4f}")
+    print(f"Test F1 (macro): {f1_macro:.4f}")
+    print("\nClassification report (holdout test)")
+    print(classification_report(y_te, pred, target_names=le.classes_, digits=4, zero_division=0))
 
 
 if __name__ == "__main__":
